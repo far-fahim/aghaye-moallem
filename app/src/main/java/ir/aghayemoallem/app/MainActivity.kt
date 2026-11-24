@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import java.io.File
 import java.util.Locale
 import java.util.UUID
+import android.util.Log
 
 class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private var tts: TextToSpeech? = null
@@ -36,8 +37,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         super.onCreate(savedInstanceState)
         tts = TextToSpeech(this, this, "com.github.opscalehub.avacore")
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String) {}
+            override fun onStart(utteranceId: String) { if (utteranceId.startsWith("save-")) Log.i("AghayeMoallemTTS", "Started: $utteranceId") }
             override fun onDone(utteranceId: String) {
+                if (utteranceId.startsWith("save-")) Log.i("AghayeMoallemTTS", "Done: $utteranceId")
                 if (utteranceId.startsWith("save-")) runOnUiThread {
                     saveTimeout?.let(mainHandler::removeCallbacks)
                     saveTimeout = null
@@ -72,6 +74,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 }
             }
             override fun onError(utteranceId: String) {
+                if (utteranceId.startsWith("save-")) Log.e("AghayeMoallemTTS", "Error: $utteranceId")
                 if (utteranceId.startsWith("save-")) runOnUiThread {
                     saveTimeout?.let(mainHandler::removeCallbacks)
                     saveTimeout = null
@@ -105,12 +108,14 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                         saving = false
                                         engine.stop()
                                         target.delete()
-                                        status = "ساخت صدا بیش از ۹۰ ثانیه طول کشید؛ موتور AvaCore پاسخ نداد."
+                                        status = "AvaCore تا ۹۰ ثانیه پاسخ نداد؛ فایل ساخته نشد."
+                                        Log.e("AghayeMoallemTTS", "Timeout waiting for synthesis callback")
                                     }
                                     saveTimeout = null
                                 }
                                 saveTimeout = timeout
                                 mainHandler.postDelayed(timeout, 90000L)
+                                Log.i("AghayeMoallemTTS", "Submitting file synthesis; chars=${value.length}")
                                 // Some TTS engines block while accepting synthesizeToFile.
                                 // Never call this Binder API on the UI thread.
                                 Thread({
