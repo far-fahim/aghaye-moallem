@@ -34,7 +34,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        tts = TextToSpeech(this, this)
+        tts = TextToSpeech(this, this, "com.github.opscalehub.avacore")
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String) {}
             override fun onDone(utteranceId: String) {
@@ -73,8 +73,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             }
             override fun onError(utteranceId: String) {
                 if (utteranceId.startsWith("save-")) runOnUiThread {
+                    saveTimeout?.let(mainHandler::removeCallbacks)
+                    saveTimeout = null
                     saving = false
-                    status = "تولید فایل صوتی ناموفق بود؛ موتور فارسی را بررسی کن."
+                    status = "AvaCore هنگام ساخت فایل خطا داد؛ یک متن کوتاه‌تر را امتحان کن."
                 }
             }
         })
@@ -108,12 +110,12 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                             saving = false
                                             engine.stop()
                                             target.delete()
-                                            status = "ساخت صدا بیش از ۳۰ ثانیه طول کشید و متوقف شد. موتور گفتار پاسخ نداد."
+                                            status = "ساخت صدا بیش از ۹۰ ثانیه طول کشید و متوقف شد."
                                         }
                                         saveTimeout = null
                                     }
                                     saveTimeout = timeout
-                                    mainHandler.postDelayed(timeout, 30000L)
+                                    mainHandler.postDelayed(timeout, 90000L)
                                 }
                             }
                         },
@@ -130,18 +132,22 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             status = "موتور گفتار گوشی راه‌اندازی نشد."
             return
         }
-        val languageResult = tts?.setLanguage(Locale("fa", "IR"))
-        ready = languageResult != null &&
-            languageResult != TextToSpeech.LANG_MISSING_DATA &&
-            languageResult != TextToSpeech.LANG_NOT_SUPPORTED
-        val persianVoices: List<Voice> =
-            (tts?.voices ?: emptySet()).filter { it.locale.language == "fa" }
-        offlineVoiceAvailable = persianVoices.any { !it.isNetworkConnectionRequired }
+        val engine = tts ?: run {
+            status = "اتصال به موتور AvaCore برقرار نشد."
+            return
+        }
+        val languageResult = engine.setLanguage(Locale("fa", "IR"))
+        val avaVoice = engine.voices?.firstOrNull { it.name == "fa-ir-ava-goftari" }
+        val voiceResult = if (avaVoice != null) engine.setVoice(avaVoice) else TextToSpeech.ERROR
+        ready = languageResult != TextToSpeech.LANG_MISSING_DATA &&
+            languageResult != TextToSpeech.LANG_NOT_SUPPORTED &&
+            voiceResult == TextToSpeech.SUCCESS
+        offlineVoiceAvailable = avaVoice != null && !avaVoice.isNetworkConnectionRequired
         status = when {
-            !ready -> "زبان فارسی روی موتور گفتار گوشی پشتیبانی نمی‌شود؛ باید صدای فارسی نصب شود."
-            offlineVoiceAvailable -> "صدای فارسی آفلاین در موتور گوشی پیدا شد."
-            persianVoices.isNotEmpty() -> "صدای فارسی پیدا شد، اما آفلاین بودن آن تأیید نشده است."
-            else -> "موتور آماده است؛ برای گفتار فارسی باید صدای فارسی نصب شود."
+            avaVoice == null -> "صدای AvaCore پیدا نشد؛ برنامه باید به موتور AvaCore متصل باشد."
+            voiceResult != TextToSpeech.SUCCESS -> "انتخاب صدای فارسی AvaCore ناموفق بود."
+            !ready -> "موتور AvaCore زبان فارسی را آماده نکرد."
+            else -> "به صدای فارسی AvaCore متصل شد؛ آماده پخش و ساخت فایل آفلاین."
         }
     }
 
