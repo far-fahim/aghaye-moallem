@@ -4,6 +4,8 @@ import android.content.ContentValues
 import android.content.Intent
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
@@ -27,6 +29,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private var status by mutableStateOf("در حال آماده‌سازی موتور گفتار…")
     private var offlineVoiceAvailable by mutableStateOf(false)
     private var saving by mutableStateOf(false)
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var saveTimeout: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -35,6 +39,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             override fun onStart(utteranceId: String) {}
             override fun onDone(utteranceId: String) {
                 if (utteranceId.startsWith("save-")) runOnUiThread {
+                    saveTimeout?.let(mainHandler::removeCallbacks)
+                    saveTimeout = null
                     saving = false
                     try {
                         val temp = File(cacheDir, "$utteranceId.wav")
@@ -95,11 +101,23 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                 val result = engine.synthesizeToFile(value, Bundle(), target, id)
                                 if (result != TextToSpeech.SUCCESS) {
                                     saving = false
-                                    status = "موتور گفتار نتوانست فایل صوتی بسازد."
+                                    status = "موتور گفتار درخواست ساخت فایل را نپذیرفت."
+                                } else {
+                                    val timeout = Runnable {
+                                        if (saving) {
+                                            saving = false
+                                            engine.stop()
+                                            target.delete()
+                                            status = "ساخت صدا بیش از ۳۰ ثانیه طول کشید و متوقف شد. موتور گفتار پاسخ نداد."
+                                        }
+                                        saveTimeout = null
+                                    }
+                                    saveTimeout = timeout
+                                    mainHandler.postDelayed(timeout, 30000L)
                                 }
                             }
                         },
-                        onStop = { tts?.stop(); saving = false },
+                        onStop = { saveTimeout?.let(mainHandler::removeCallbacks); saveTimeout = null; tts?.stop(); saving = false; status = "عملیات متوقف شد." },
                         onChooseEngine = { startActivity(Intent("com.android.settings.TTS_SETTINGS")) }
                     )
                 }
@@ -128,6 +146,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     }
 
     override fun onDestroy() {
+        saveTimeout?.let(mainHandler::removeCallbacks)
+        saveTimeout = null
         tts?.stop()
         tts?.shutdown()
         tts = null
