@@ -100,23 +100,33 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                                 engine.setSpeechRate(rate)
                                 val id = "save-" + UUID.randomUUID().toString().take(8)
                                 val target = File(cacheDir, "$id.wav")
-                                val result = engine.synthesizeToFile(value, Bundle(), target, id)
-                                if (result != TextToSpeech.SUCCESS) {
-                                    saving = false
-                                    status = "موتور گفتار درخواست ساخت فایل را نپذیرفت."
-                                } else {
-                                    val timeout = Runnable {
-                                        if (saving) {
-                                            saving = false
-                                            engine.stop()
-                                            target.delete()
-                                            status = "ساخت صدا بیش از ۹۰ ثانیه طول کشید و متوقف شد."
-                                        }
-                                        saveTimeout = null
+                                val timeout = Runnable {
+                                    if (saving) {
+                                        saving = false
+                                        engine.stop()
+                                        target.delete()
+                                        status = "ساخت صدا بیش از ۹۰ ثانیه طول کشید؛ موتور AvaCore پاسخ نداد."
                                     }
-                                    saveTimeout = timeout
-                                    mainHandler.postDelayed(timeout, 90000L)
+                                    saveTimeout = null
                                 }
+                                saveTimeout = timeout
+                                mainHandler.postDelayed(timeout, 90000L)
+                                // Some TTS engines block while accepting synthesizeToFile.
+                                // Never call this Binder API on the UI thread.
+                                Thread({
+                                    val result = try {
+                                        engine.synthesizeToFile(value, Bundle(), target, id)
+                                    } catch (e: Exception) {
+                                        TextToSpeech.ERROR
+                                    }
+                                    if (result != TextToSpeech.SUCCESS) runOnUiThread {
+                                        saveTimeout?.let(mainHandler::removeCallbacks)
+                                        saveTimeout = null
+                                        saving = false
+                                        target.delete()
+                                        status = "موتور گفتار درخواست ساخت فایل را نپذیرفت."
+                                    }
+                                }, "AvaCore-file-synthesis").start();
                             }
                         },
                         onStop = { saveTimeout?.let(mainHandler::removeCallbacks); saveTimeout = null; tts?.stop(); saving = false; status = "عملیات متوقف شد." },
