@@ -3,6 +3,7 @@ package ir.aghayemoallem.app
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.Voice
+import android.content.Intent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -34,7 +35,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             tts?.setSpeechRate(rate)
                             tts?.speak(value, TextToSpeech.QUEUE_FLUSH, null, "teacher-utterance")
                         },
-                        onStop = { tts?.stop() }
+                        onStop = { tts?.stop() },
+                        onChooseEngine = { startActivity(Intent("com.android.settings.TTS_SETTINGS")) }
                     )
                 }
             }
@@ -76,7 +78,8 @@ private fun TeacherScreen(
     status: String,
     offlineVoiceAvailable: Boolean,
     onSpeak: (String, Float) -> Unit,
-    onStop: () -> Unit
+    onStop: () -> Unit,
+    onChooseEngine: () -> Unit
 ) {
     var text by remember {
         mutableStateOf("سلام بچه‌های عزیز! امروز با هم یک درس تازه یاد می‌گیریم.")
@@ -104,6 +107,7 @@ private fun TeacherScreen(
             }
             OutlinedButton(onClick = onStop) { Text("توقف") }
         }
+        OutlinedButton(onClick = onChooseEngine, modifier = Modifier.fillMaxWidth()) { Text("انتخاب موتور صدای فارسی") }
         Text(status, style = MaterialTheme.typography.bodyMedium)
         Text(
             if (offlineVoiceAvailable) "وضعیت: صدای فارسی آفلاین شناسایی شد."
