@@ -20,6 +20,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import java.io.File
+import java.io.FileOutputStream
+import java.io.ByteArrayOutputStream
 import java.util.Locale
 import java.util.UUID
 import android.util.Log
@@ -36,12 +38,30 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private var activeSaveText: String = ""
     private var activeSaveRate: Float = 0.9f
     private var activeSaveAttempt: Int = 0
+    private val audioLock = Any()
+    private val capturedAudio = ByteArrayOutputStream()
+    private var capturedSampleRate = 22050
+    private var capturedChannels = 1
+    private var capturedEncoding = android.media.AudioFormat.ENCODING_PCM_16BIT
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         tts = TextToSpeech(this, this, "com.github.opscalehub.avacore")
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String) { if (utteranceId.startsWith("save-")) Log.i("AghayeMoallemTTS", "Started: $utteranceId") }
+            override fun onBeginSynthesis(utteranceId: String, sampleRateInHz: Int, audioFormat: Int, channelCount: Int) {
+                if (utteranceId.startsWith("save-")) synchronized(audioLock) {
+                    capturedAudio.reset()
+                    capturedSampleRate = sampleRateInHz
+                    capturedChannels = channelCount.coerceAtLeast(1)
+                    capturedEncoding = audioFormat
+                }
+            }
+            override fun onAudioAvailable(utteranceId: String, audio: ByteArray) {
+                if (utteranceId.startsWith("save-")) synchronized(audioLock) {
+                    capturedAudio.write(audio, 0, audio.size)
+                }
+            }
             override fun onDone(utteranceId: String) {
                 if (utteranceId.startsWith("save-")) Log.i("AghayeMoallemTTS", "Done: $utteranceId")
                 if (utteranceId.startsWith("save-")) runOnUiThread {
@@ -50,6 +70,14 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     saving = false
                     try {
                         val temp = File(cacheDir, "$utteranceId.wav")
+                        val captured = synchronized(audioLock) {
+                            Triple(capturedAudio.toByteArray(), capturedSampleRate, capturedChannels)
+                        }
+                        if (captured.first.size < 1000 || capturedEncoding != android.media.AudioFormat.ENCODING_PCM_16BIT) {
+                            status = "موتور گفتار داده صوتی قابل ذخیره تحویل نداد."
+                            return@runOnUiThread
+                        }
+                        writeWav(temp, captured.first, captured.second, captured.third)
                         if (!temp.exists() || temp.length() < 1000L) {
                             status = "فایل صوتی ساخته نشد؛ موتور گفتار خروجی نداد."
                             return@runOnUiThread
@@ -147,24 +175,46 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }
         saveTimeout = timeout
         mainHandler.postDelayed(timeout, 90000L)
-        Log.i("AghayeMoallemTTS", "Submitting file synthesis; chars=${value.length}; attempt=$attempt")
-        Thread({
-            val result = try {
-                engine.synthesizeToFile(value, Bundle(), target, id)
-            } catch (e: Exception) {
-                Log.e("AghayeMoallemTTS", "synthesizeToFile threw", e)
-                TextToSpeech.ERROR
+        synchronized(audioLock) { capturedAudio.reset() }
+        Log.i("AghayeMoallemTTS", "Submitting audio capture through speak; chars=${value.length}; attempt=$attempt")
+        val result = engine.speak(value, TextToSpeech.QUEUE_FLUSH, Bundle(), id)
+        if (result != TextToSpeech.SUCCESS) {
+            saveTimeout?.let(mainHandler::removeCallbacks)
+            saveTimeout = null
+            saving = false
+            target.delete()
+            status = "موتور گفتار درخواست تولید صدا را نپذیرفت."
+        }
+    }
+
+    private fun writeWav(file: File, pcm: ByteArray, sampleRate: Int, channels: Int) {
+        val byteRate = sampleRate * channels * 2
+        FileOutputStream(file).use { out ->
+            fun writeInt(value: Int) {
+                out.write(value and 0xff)
+                out.write((value shr 8) and 0xff)
+                out.write((value shr 16) and 0xff)
+                out.write((value shr 24) and 0xff)
             }
-            if (result != TextToSpeech.SUCCESS) runOnUiThread {
-                if (activeSaveId == id) {
-                    saveTimeout?.let(mainHandler::removeCallbacks)
-                    saveTimeout = null
-                    saving = false
-                    target.delete()
-                    status = "موتور گفتار درخواست ساخت فایل را نپذیرفت."
-                }
+            fun writeShort(value: Int) {
+                out.write(value and 0xff)
+                out.write((value shr 8) and 0xff)
             }
-        }, "AvaCore-file-synthesis").start()
+            out.write("RIFF".toByteArray(Charsets.US_ASCII))
+            writeInt(36 + pcm.size)
+            out.write("WAVE".toByteArray(Charsets.US_ASCII))
+            out.write("fmt ".toByteArray(Charsets.US_ASCII))
+            writeInt(16)
+            writeShort(1)
+            writeShort(channels)
+            writeInt(sampleRate)
+            writeInt(byteRate)
+            writeShort(channels * 2)
+            writeShort(16)
+            out.write("data".toByteArray(Charsets.US_ASCII))
+            writeInt(pcm.size)
+            out.write(pcm)
+        }
     }
 
     override fun onInit(result: Int) {
