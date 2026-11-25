@@ -89,16 +89,19 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     if (activeSaveId != utteranceId) return@runOnUiThread
                     saveTimeout?.let(mainHandler::removeCallbacks)
                     saveTimeout = null
-                    if (activeSaveAttempt == 0) {
-                        status = "موتور صدا خطا داد؛ یک بار دوباره تلاش می‌کنم…"
+                    if (activeSaveAttempt < 5) {
+                        val nextAttempt = activeSaveAttempt + 1
+                        status = "موتور گفتار هنوز آماده نیست؛ تلاش ${nextAttempt} از ۵، چند ثانیه صبر کنید…"
+                        // AvaCore loads its large neural model asynchronously. onInit may
+                        // succeed before model initialization finishes, so retry requests.
                         val retry = Runnable {
-                            if (saving && activeSaveId == utteranceId) beginSave(activeSaveText, activeSaveRate, 1)
+                            if (saving && activeSaveId == utteranceId) beginSave(activeSaveText, activeSaveRate, nextAttempt)
                         }
                         saveTimeout = retry
-                        mainHandler.postDelayed(retry, 3000L)
+                        mainHandler.postDelayed(retry, 8000L)
                     } else {
                         saving = false
-                        status = "AvaCore نتوانست فایل صوتی بسازد. وضعیت موتور را بررسی کنید."
+                        status = "پس از ۶ تلاش، موتور AvaCore هنوز خروجی نداد. مدل فارسی بارگذاری نشده است."
                     }
                 }
             }
@@ -149,16 +152,24 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         target.delete()
         val timeout = Runnable {
             if (saving && activeSaveId == id) {
-                saving = false
-                engine.stop()
-                target.delete()
-                status = "ساخت فایل بیش از ۹۰ ثانیه طول کشید؛ موتور گفتار پاسخ نداد."
-                Log.e("AghayeMoallemTTS", "Synthesis timeout; attempt=$attempt")
+                if (attempt < 5) {
+                    // The initial request may race with AvaCore's background model loading.
+                    Log.w("AghayeMoallemTTS", "Attempt $attempt timed out; retrying after warm-up")
+                    engine.stop()
+                    target.delete()
+                    beginSave(value, rate, attempt + 1)
+                } else {
+                    saving = false
+                    engine.stop()
+                    target.delete()
+                    status = "موتور AvaCore پس از چند تلاش و انتظار کافی پاسخ نداد؛ مدل فارسی بارگذاری نشده است."
+                    Log.e("AghayeMoallemTTS", "Synthesis timeout after retries")
+                }
             }
             saveTimeout = null
         }
         saveTimeout = timeout
-        mainHandler.postDelayed(timeout, 90000L)
+        mainHandler.postDelayed(timeout, 120000L)
         Log.i("AghayeMoallemTTS", "synthesizeToFile: chars=${value.length}, attempt=$attempt")
         val result = engine.synthesizeToFile(value, Bundle(), target, id)
         if (result != TextToSpeech.SUCCESS) {
