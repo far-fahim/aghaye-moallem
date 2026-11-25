@@ -9,7 +9,6 @@ import android.os.Looper
 import android.provider.MediaStore
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
-import android.speech.tts.Voice
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -20,8 +19,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import java.io.File
-import java.io.FileOutputStream
-import java.io.ByteArrayOutputStream
 import java.util.Locale
 import java.util.UUID
 import android.util.Log
@@ -38,48 +35,27 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private var activeSaveText: String = ""
     private var activeSaveRate: Float = 0.9f
     private var activeSaveAttempt: Int = 0
-    private val audioLock = Any()
-    private val capturedAudio = ByteArrayOutputStream()
-    private var capturedSampleRate = 22050
-    private var capturedChannels = 1
-    private var capturedEncoding = android.media.AudioFormat.ENCODING_PCM_16BIT
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         tts = TextToSpeech(this, this, "com.github.opscalehub.avacore")
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String) { if (utteranceId.startsWith("save-")) Log.i("AghayeMoallemTTS", "Started: $utteranceId") }
-            override fun onBeginSynthesis(utteranceId: String, sampleRateInHz: Int, audioFormat: Int, channelCount: Int) {
-                if (utteranceId.startsWith("save-")) synchronized(audioLock) {
-                    capturedAudio.reset()
-                    capturedSampleRate = sampleRateInHz
-                    capturedChannels = channelCount.coerceAtLeast(1)
-                    capturedEncoding = audioFormat
-                }
+            override fun onStart(utteranceId: String) {
+                if (utteranceId.startsWith("save-")) Log.i("AghayeMoallemTTS", "Synthesis started: $utteranceId")
             }
-            override fun onAudioAvailable(utteranceId: String, audio: ByteArray) {
-                if (utteranceId.startsWith("save-")) synchronized(audioLock) {
-                    capturedAudio.write(audio, 0, audio.size)
-                }
-            }
+
             override fun onDone(utteranceId: String) {
-                if (utteranceId.startsWith("save-")) Log.i("AghayeMoallemTTS", "Done: $utteranceId")
-                if (utteranceId.startsWith("save-")) runOnUiThread {
+                if (!utteranceId.startsWith("save-")) return
+                runOnUiThread {
+                    if (activeSaveId != utteranceId) return@runOnUiThread
                     saveTimeout?.let(mainHandler::removeCallbacks)
                     saveTimeout = null
                     saving = false
                     try {
                         val temp = File(cacheDir, "$utteranceId.wav")
-                        val captured = synchronized(audioLock) {
-                            Triple(capturedAudio.toByteArray(), capturedSampleRate, capturedChannels)
-                        }
-                        if (captured.first.size < 1000 || capturedEncoding != android.media.AudioFormat.ENCODING_PCM_16BIT) {
-                            status = "موتور گفتار داده صوتی قابل ذخیره تحویل نداد."
-                            return@runOnUiThread
-                        }
-                        writeWav(temp, captured.first, captured.second, captured.third)
                         if (!temp.exists() || temp.length() < 1000L) {
-                            status = "فایل صوتی ساخته نشد؛ موتور گفتار خروجی نداد."
+                            status = "موتور گفتار فایل صوتی خالی تحویل داد؛ ساخت فایل ناموفق بود."
+                            Log.e("AghayeMoallemTTS", "Synthesis completed without a valid file")
                             return@runOnUiThread
                         }
                         val values = ContentValues().apply {
@@ -88,12 +64,12 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                             put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/AghayeMoallem")
                         }
                         val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                            ?: throw IllegalStateException("ذخیره‌سازی در پوشه دانلود انجام نشد")
-                        contentResolver.openOutputStream(uri)?.use { out ->
-                            temp.inputStream().use { input -> input.copyTo(out) }
+                            ?: throw IllegalStateException("ساخت فایل در پوشه دانلود انجام نشد")
+                        contentResolver.openOutputStream(uri)?.use { output ->
+                            temp.inputStream().use { input -> input.copyTo(output) }
                         } ?: throw IllegalStateException("فایل مقصد باز نشد")
                         temp.delete()
-                        status = "فایل صوتی در پوشه Download/AghayeMoallem ذخیره شد."
+                        status = "فایل صوتی با موفقیت در Download/AghayeMoallem ذخیره شد."
                         val share = Intent(Intent.ACTION_SEND).apply {
                             type = "audio/wav"
                             putExtra(Intent.EXTRA_STREAM, uri)
@@ -105,27 +81,29 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     }
                 }
             }
+
             override fun onError(utteranceId: String) {
-                if (utteranceId.startsWith("save-")) Log.e("AghayeMoallemTTS", "Error: $utteranceId")
-                if (utteranceId.startsWith("save-")) runOnUiThread {
+                if (!utteranceId.startsWith("save-")) return
+                Log.e("AghayeMoallemTTS", "Synthesis error: $utteranceId")
+                runOnUiThread {
+                    if (activeSaveId != utteranceId) return@runOnUiThread
                     saveTimeout?.let(mainHandler::removeCallbacks)
                     saveTimeout = null
-                    if (activeSaveId == utteranceId && activeSaveAttempt == 0) {
-                        status = "موتور صدا هنوز در حال آماده‌سازی است؛ یک بار خودکار دوباره تلاش می‌کنم…"
+                    if (activeSaveAttempt == 0) {
+                        status = "موتور صدا خطا داد؛ یک بار دوباره تلاش می‌کنم…"
                         val retry = Runnable {
-                            if (saving && activeSaveId == utteranceId) {
-                                beginSave(activeSaveText, activeSaveRate, 1)
-                            }
+                            if (saving && activeSaveId == utteranceId) beginSave(activeSaveText, activeSaveRate, 1)
                         }
                         saveTimeout = retry
-                        mainHandler.postDelayed(retry, 12000L)
+                        mainHandler.postDelayed(retry, 3000L)
                     } else {
                         saving = false
-                        status = "AvaCore پس از تلاش مجدد هم فایل صوتی نساخت."
+                        status = "AvaCore نتوانست فایل صوتی بسازد. وضعیت موتور را بررسی کنید."
                     }
                 }
             }
         })
+
         setContent {
             MaterialTheme {
                 Surface(Modifier.fillMaxSize()) {
@@ -141,14 +119,19 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                         onSave = { value, rate ->
                             if (ready && value.isNotBlank() && !saving) beginSave(value, rate, 0)
                         },
-                        onStop = { saveTimeout?.let(mainHandler::removeCallbacks); saveTimeout = null; tts?.stop(); saving = false; status = "عملیات متوقف شد." },
+                        onStop = {
+                            saveTimeout?.let(mainHandler::removeCallbacks)
+                            saveTimeout = null
+                            tts?.stop()
+                            saving = false
+                            status = "عملیات متوقف شد."
+                        },
                         onChooseEngine = { startActivity(Intent("com.android.settings.TTS_SETTINGS")) }
                     )
                 }
             }
         }
     }
-
 
     private fun beginSave(value: String, rate: Float, attempt: Int) {
         val engine = tts ?: return
@@ -158,62 +141,32 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         activeSaveText = value
         activeSaveRate = rate
         activeSaveAttempt = attempt
-        status = if (attempt == 0) "در حال ساخت فایل صوتی فارسی…" else "تلاش مجدد برای ساخت فایل صوتی…"
+        status = if (attempt == 0) "در حال ساخت فایل صوتی فارسی…" else "تلاش دوباره برای ساخت فایل صوتی…"
         engine.setSpeechRate(rate)
         val id = "save-" + UUID.randomUUID().toString().take(8)
         activeSaveId = id
         val target = File(cacheDir, "$id.wav")
+        target.delete()
         val timeout = Runnable {
             if (saving && activeSaveId == id) {
                 saving = false
                 engine.stop()
                 target.delete()
-                status = "AvaCore تا ۹۰ ثانیه پاسخ نداد؛ فایل ساخته نشد."
-                Log.e("AghayeMoallemTTS", "Timeout waiting for synthesis callback; attempt=$attempt")
+                status = "ساخت فایل بیش از ۹۰ ثانیه طول کشید؛ موتور گفتار پاسخ نداد."
+                Log.e("AghayeMoallemTTS", "Synthesis timeout; attempt=$attempt")
             }
             saveTimeout = null
         }
         saveTimeout = timeout
         mainHandler.postDelayed(timeout, 90000L)
-        synchronized(audioLock) { capturedAudio.reset() }
-        Log.i("AghayeMoallemTTS", "Submitting audio capture through speak; chars=${value.length}; attempt=$attempt")
-        val result = engine.speak(value, TextToSpeech.QUEUE_FLUSH, Bundle(), id)
+        Log.i("AghayeMoallemTTS", "synthesizeToFile: chars=${value.length}, attempt=$attempt")
+        val result = engine.synthesizeToFile(value, Bundle(), target, id)
         if (result != TextToSpeech.SUCCESS) {
             saveTimeout?.let(mainHandler::removeCallbacks)
             saveTimeout = null
             saving = false
             target.delete()
-            status = "موتور گفتار درخواست تولید صدا را نپذیرفت."
-        }
-    }
-
-    private fun writeWav(file: File, pcm: ByteArray, sampleRate: Int, channels: Int) {
-        val byteRate = sampleRate * channels * 2
-        FileOutputStream(file).use { out ->
-            fun writeInt(value: Int) {
-                out.write(value and 0xff)
-                out.write((value shr 8) and 0xff)
-                out.write((value shr 16) and 0xff)
-                out.write((value shr 24) and 0xff)
-            }
-            fun writeShort(value: Int) {
-                out.write(value and 0xff)
-                out.write((value shr 8) and 0xff)
-            }
-            out.write("RIFF".toByteArray(Charsets.US_ASCII))
-            writeInt(36 + pcm.size)
-            out.write("WAVE".toByteArray(Charsets.US_ASCII))
-            out.write("fmt ".toByteArray(Charsets.US_ASCII))
-            writeInt(16)
-            writeShort(1)
-            writeShort(channels)
-            writeInt(sampleRate)
-            writeInt(byteRate)
-            writeShort(channels * 2)
-            writeShort(16)
-            out.write("data".toByteArray(Charsets.US_ASCII))
-            writeInt(pcm.size)
-            out.write(pcm)
+            status = "موتور AvaCore درخواست ساخت فایل را نپذیرفت."
         }
     }
 
@@ -234,10 +187,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             voiceResult == TextToSpeech.SUCCESS
         offlineVoiceAvailable = avaVoice != null && !avaVoice.isNetworkConnectionRequired
         status = when {
-            avaVoice == null -> "صدای AvaCore پیدا نشد؛ برنامه باید به موتور AvaCore متصل باشد."
+            avaVoice == null -> "صدای AvaCore پیدا نشد؛ موتور AvaCore باید نصب و فعال باشد."
             voiceResult != TextToSpeech.SUCCESS -> "انتخاب صدای فارسی AvaCore ناموفق بود."
             !ready -> "موتور AvaCore زبان فارسی را آماده نکرد."
-            else -> "به صدای فارسی AvaCore متصل شد؛ آماده پخش و ساخت فایل آفلاین."
+            else -> "صدای فارسی AvaCore آماده پخش و ساخت فایل آفلاین است."
         }
     }
 
